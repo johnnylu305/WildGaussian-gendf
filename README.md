@@ -139,10 +139,10 @@ Please follow the license of 3DGS and Mip-Splatting. We thank all the authors fo
 ## Citation
 If you find our code or paper useful, please cite:
 ```bibtex
-@article{kulhanek2024wildgaussians,
-  title={WildGaussians: 3D Gaussian Splatting in the Wild},
+@inproceedings{kulhanek2024wildgaussians,
+  title={{W}ild{G}aussians: {3D} Gaussian Splatting in the Wild},
   author={Kulhanek, Jonas and Peng, Songyou and Kukelova, Zuzana and Pollefeys, Marc and Sattler, Torsten},
-  journal={NeurIPS},
+  booktitle={Proceedings of the 38th International Conference on Neural Information Processing Systems},
   year={2024}
 }
 ```
