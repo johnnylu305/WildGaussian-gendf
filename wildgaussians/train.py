@@ -1,23 +1,24 @@
 import json
 from functools import partial
+import sys
+import os
 import logging
 import math
 import time
 import shutil
 from omegaconf import OmegaConf
-import os
 from typing import Dict, cast, Optional, List, Tuple
 from tqdm import tqdm
 from pathlib import Path
 import numpy as np
 import click
-from .types import FrozenSet, Method, Dataset, DatasetFeature, EvaluationProtocol, Logger
-from .evaluation import render_all_images, evaluate, compute_metrics, DefaultEvaluationProtocol
-from .logging import TensorboardLogger
-from .datasets import load_dataset
-from .datasets.phototourism import horizontal_half_dataset
-from . import datasets
-from .utils import (
+from wildgaussians.types import FrozenSet, Method, Dataset, DatasetFeature, EvaluationProtocol, Logger
+from wildgaussians.evaluation import render_all_images, evaluate, compute_metrics, DefaultEvaluationProtocol
+from wildgaussians.wildlogging import TensorboardLogger
+from wildgaussians.datasets import load_dataset
+from wildgaussians.datasets.phototourism import horizontal_half_dataset
+from wildgaussians import datasets
+from wildgaussians.utils import (
     Indices, 
     setup_logging, 
     image_to_srgb, 
@@ -27,7 +28,7 @@ from .utils import (
     SetParamOptionType,
     MetricsAccumulator,
 )
-from .method import WildGaussians
+from wildgaussians.method import WildGaussians
 
 
 def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, step: int, evaluation_protocol: EvaluationProtocol, split: str, nb_info):
@@ -55,8 +56,7 @@ def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, s
         logging.warning(f"removed existing predictions at {output}")
 
     if os.path.exists(output_metrics):
-        os.unlink(output_metrics)
-        logging.warning(f"removed existing results at {output_metrics}")
+        os.unlink(output_metrics, logging.warning(f"removed existing results at {output_metrics}"))
 
     start = time.perf_counter()
     num_vis_images = 16
@@ -242,7 +242,7 @@ def train_command(
     features: FrozenSet[DatasetFeature] = frozenset({"color", "points3D_xyz"})
     if dataset_type == "phototourism":
         assert config_overrides["config"] == "phototourism.yml"
-        from .datasets.phototourism import load_phototourism_dataset, download_phototourism_dataset, NerfWEvaluationProtocol
+        from wildgaussians.datasets.phototourism import load_phototourism_dataset, download_phototourism_dataset, NerfWEvaluationProtocol
 
         evaluation_protocol = NerfWEvaluationProtocol()
         load_dataset_fn = partial(
@@ -254,7 +254,7 @@ def train_command(
     else:
         if dataset_type == "nerfonthego":
             assert config_overrides["config"] == "nerfonthego.yml"
-        from .datasets.colmap import load_colmap_dataset
+        from wildgaussians.datasets.colmap import load_colmap_dataset
         evaluation_protocol = DefaultEvaluationProtocol()
         load_dataset_fn = partial(
             load_dataset, 
