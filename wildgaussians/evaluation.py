@@ -726,21 +726,21 @@ def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: 
 
             if split=="train":
                 #with open_fn(f"gt-color/{relative_name.with_suffix('.png')}") as f:
-                with open_fn(f"data_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                with open_fn(f"data_{step}/train_{relative_name.with_suffix('.png')}") as f:
                     save_image(f, gt_image)
                 #with open_fn(f"color/{relative_name.with_suffix('.png')}") as f:
-                with open_fn(f"render_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                with open_fn(f"render_{step}/train_{relative_name.with_suffix('.png')}") as f:
                     save_image(f, pred_image)
                 # to h, w, 1
                 if pred["loss_mult"] is not None and split=="train":
                     mask = np.transpose(pred["loss_mult"], (1, 2, 0))[...,0]
-                    with open_fn(f"mask_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                    with open_fn(f"mask_{step}/train_{relative_name.with_suffix('.png')}") as f:
                         save_image(f, mask)
                 if pred["loss_mult"] is not None and split=="train":
                     mask = np.transpose(pred["loss_mult"], (1, 2, 0))[...,0]
                     mask_rgb = (np.repeat(mask[..., None], 3, axis=2)*255).astype(np.uint8)  # (H, W, 3)
                     combine = np.concatenate((gt_image, mask_rgb, pred_image), axis=1)
-                    with open_fn(f"composition_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                    with open_fn(f"composition_{step}/train_{relative_name.with_suffix('.png')}") as f:
                         save_image(f, combine)
             elif split=="test":
                 combine = np.concatenate((gt_image, pred_image), axis=1)

@@ -359,7 +359,7 @@ def load_colmap_dataset(path: Union[Path, str],
     
     undistort_map_dict = {} 
 
-    for image, new_K in zip(images.values(), all_newKs):
+    for image, new_K, (map1, map2) in zip(images.values(), all_newKs, all_maps):
         camera: Camera = colmap_cameras[image.camera_id]
         intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
 
