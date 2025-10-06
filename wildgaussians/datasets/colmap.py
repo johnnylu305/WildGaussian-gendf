@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 from typing import Tuple, Optional, Dict, List, Union
 import numpy as np
+import imageio.v2 as imageio
+import cv2
 from ..types import DatasetFeature, FrozenSet
 from ..types import CameraModel, camera_model_to_int, new_cameras
 from ..utils import Indices
@@ -230,7 +232,7 @@ def load_colmap_dataset(path: Union[Path, str],
             colmap_path = Path("sparse")
     colmap_path = path / colmap_path
     if images_path is None:
-        images_path = Path("images")
+        images_path = Path("images_8")
     images_path = path / images_path
     if not colmap_path.exists():
         raise DatasetNotFoundError("Missing 'sparse/0' folder in COLMAP dataset")
@@ -275,28 +277,144 @@ def load_colmap_dataset(path: Union[Path, str],
     image_names = []
     camera_sizes = []
 
+    # sorted
+    images = dict(sorted(images.items(), key=lambda kv: kv[1].name))
+
+
     image: Image
-    i = 0
-    c2w: np.ndarray
+
+    # --- Step 0: Check and compute rescale factors from actual images ---
+    sample_image_path = next((path / "images_8").glob("*"))  # pick the first image in folder
+    sample_image = imageio.imread(sample_image_path)[..., :3]
+    actual_height, actual_width = sample_image.shape[:2]
+    
+    # colmap run on images
+    sample_image_path = next((path / "images").glob("*"))  # pick the first image in folder
+    sample_image = imageio.imread(sample_image_path)[..., :3]
+    colmap_height, colmap_width = sample_image.shape[:2]
+
+    # Assume all images have same size (typical COLMAP dataset)
+    s_width = actual_width / colmap_width
+    s_height = actual_height / colmap_height
+
+
+    # --- Step 1: Pre-loop to collect ROI + new_K info ---
+    all_rois = []
+    all_newKs = []
+    all_maps = []
+    image_sizes = []
     for image in images.values():
         camera: Camera = colmap_cameras[image.camera_id]
         intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
-        camera_sizes.append(np.array((w, h), dtype=np.int32))
-        camera_intrinsics.append(intrinsics)
-        camera_models.append(camera_model)
-        camera_distortion_params.append(distortion_params)
+
+        # intrinsics is 1-D; scale elements directly  
+        intrinsics = np.asarray(intrinsics, dtype=np.float32)
+        if intrinsics.size == 4:          # PINHOLE: [fx, fy, cx, cy]   
+            fx, fy, cx, cy = intrinsics
+        else:
+            raise ValueError(f"Unsupported intrinsics length: {intrinsics.size}")
+
+        fx *= s_width                     
+        fy *= s_height                    
+        cx *= s_width                     
+        cy *= s_height                    
+
+        w = int(round(w * s_width))       
+        h = int(round(h * s_height))      
+        assert w == actual_width
+        assert h == actual_height         
+
+        # Build 3x3 K for OpenCV from the scaled 1-D intrinsics
+        K = np.array([[fx, 0.0, cx],
+                    [0.0, fy, cy],
+                    [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        D = np.asarray(distortion_params[:4], dtype=np.float32)
+        new_K, roi = cv2.getOptimalNewCameraMatrix(K, D, (w, h), alpha=0)
+
+        # Precompute undistort maps (store as fixed-point to save memory)
+        map1, map2 = cv2.initUndistortRectifyMap(
+            cameraMatrix=K, distCoeffs=D, R=np.eye(3, dtype=np.float32),
+            newCameraMatrix=new_K, size=(w, h), m1type=cv2.CV_16SC2
+        )
+
+        all_rois.append(roi)
+        all_newKs.append(new_K)
+        all_maps.append((map1, map2))
+        image_sizes.append((w, h))
+
+    # --- Compute global crop bounding box (unchanged) ---
+    x_min = max([r[0] for r in all_rois])
+    y_min = max([r[1] for r in all_rois])
+    x_max = min([r[0] + r[2] for r in all_rois])
+    y_max = min([r[1] + r[3] for r in all_rois])
+
+    
+    global_crop = (x_min, y_min, x_max, y_max)
+    crop_w = x_max - x_min
+    crop_h = y_max - y_min
+
+    i = 0
+    c2w: np.ndarray
+    
+    undistort_map_dict = {} 
+
+    for image, new_K in zip(images.values(), all_newKs):
+        camera: Camera = colmap_cameras[image.camera_id]
+        intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
+
+        # adjust K
+        new_K_adj = new_K.copy()
+        new_K_adj[0, 2] -= x_min  # shift principal point
+        new_K_adj[1, 2] -= y_min  # shift principal point
+
+        fx = new_K_adj[0, 0]
+        fy = new_K_adj[1, 1]
+        cx = new_K_adj[0, 2]
+        cy = new_K_adj[1, 2]
+        intrinsic_vec = np.array([fx, fy, cx, cy], dtype=np.float32)
+        camera_intrinsics.append(intrinsic_vec)
+        camera_models.append(1) # PINHOLE
+        camera_distortion_params.append(np.zeros(0, dtype=np.float32))
+        camera_sizes.append(np.array((crop_w, crop_h), dtype=np.int32))  # from (w, h) → (crop_w, crop_h)
         image_names.append(image.name)
         image_paths.append(str(images_path / image.name))
 
-        rotation = qvec2rotmat(image.qvec).astype(np.float64)
+        # Store map & crop info for later image loading
+        undistort_map_dict[str(images_path / image.name)] = {
+            "map1": map1,
+            "map2": map2,
+            "crop": (x_min, y_min, x_max, y_max)
+        }
 
+        rotation = qvec2rotmat(image.qvec).astype(np.float64)
         translation = image.tvec.reshape(3, 1).astype(np.float64)
         w2c = np.concatenate([rotation, translation], 1)
         w2c = np.concatenate([w2c, np.array([[0, 0, 0, 1]], dtype=w2c.dtype)], 0)
         c2w = np.linalg.inv(w2c)
-
         camera_poses.append(c2w[0:3, :])
+
         i += 1
+
+    #for image in images.values():
+    #    camera: Camera = colmap_cameras[image.camera_id]
+    #    intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
+    #    camera_sizes.append(np.array((w, h), dtype=np.int32))
+    #    camera_intrinsics.append(intrinsics)
+    #    camera_models.append(camera_model)
+    #    camera_distortion_params.append(distortion_params)
+    #    image_names.append(image.name)
+    #    image_paths.append(str(images_path / image.name))
+    #
+    #    rotation = qvec2rotmat(image.qvec).astype(np.float64)
+
+    #    translation = image.tvec.reshape(3, 1).astype(np.float64)
+    #    w2c = np.concatenate([rotation, translation], 1)
+    #    w2c = np.concatenate([w2c, np.array([[0, 0, 0, 1]], dtype=w2c.dtype)], 0)
+    #    c2w = np.linalg.inv(w2c)
+
+    #    camera_poses.append(c2w[0:3, :])
+    #    i += 1
 
     # Estimate nears fars
     near = 0.01
@@ -338,13 +456,25 @@ def load_colmap_dataset(path: Union[Path, str],
                     train_indices = indices
             assert train_indices is not None
         else:
-            if test_indices is None:
-                test_indices = Indices.every_iters(8)
-            dataset_len = len(image_paths)
-            test_indices.total = dataset_len
-            test_indices_array: np.ndarray = np.array([i in test_indices for i in range(dataset_len)], dtype=bool)
-            train_indices = np.logical_not(test_indices_array)
-            indices = train_indices if split == "train" else test_indices_array
+            # TODO: clutter here
+            #if test_indices is None:
+            #    test_indices = Indices.every_iters(8)
+            #dataset_len = len(image_paths)
+            #test_indices.total = dataset_len
+            #test_indices_array: np.ndarray = np.array([i in test_indices for i in range(dataset_len)], dtype=bool)
+            #train_indices = np.logical_not(test_indices_array)
+            #indices = train_indices if split == "train" else test_indices_array
+            
+            # split training and testing
+            image_names_np = np.array([p.split("/")[-1] for p in image_paths])
+            train_mask = np.array(["clutter_" in name for name in image_names_np], dtype=bool)
+            test_mask = np.array(["extra_" in name for name in image_names_np], dtype=bool)
+            if split == "train":
+                indices = train_mask
+            elif split == "test":
+                indices = test_mask
+            else:
+                raise ValueError(f"Unknown split: {split}")
 
     viewer_transform, viewer_pose = get_default_viewer_transform(all_cameras[train_indices].poses, None)
     dataset = new_dataset(
@@ -359,8 +489,11 @@ def load_colmap_dataset(path: Union[Path, str],
             "color_space": "srgb",
             "viewer_transform": viewer_transform,
             "viewer_initial_pose": viewer_pose,
-        })
+        },
+        undistort_map=undistort_map_dict,
+        )
     if indices is not None:
         dataset = dataset_index_select(dataset, indices)
+    #print(dataset)
 
     return dataset

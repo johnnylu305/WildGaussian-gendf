@@ -356,7 +356,7 @@ def evaluate(predictions: str,
              output: str, 
              *,
              description: str = "evaluating", 
-             evaluation_protocol: EvaluationProtocol):
+             evaluation_protocol: EvaluationProtocol, step=None, split=None):
     """
     Evaluate a set of predictions.
 
@@ -368,8 +368,8 @@ def evaluate(predictions: str,
     Returns:
         A dictionary containing the results.
     """
-    if os.path.exists(output):
-        raise FileExistsError(f"{output} already exists")
+    #if os.path.exists(output):
+    #    raise FileExistsError(f"{output} already exists")
 
     with open_any_directory(predictions, "r") as _predictions_path:
         predictions_path = Path(_predictions_path)
@@ -380,26 +380,56 @@ def evaluate(predictions: str,
 
         # Run the evaluation
         metrics_lists = {}
-        relpaths = [str(x.relative_to(predictions_path / "color")) for x in (predictions_path / "color").glob("**/*") if x.is_file()]
+        #relpaths = [str(x.relative_to(predictions_path / "color")) for x in (predictions_path / "color").glob("**/*") if x.is_file()]
+        if split=="train":
+            relpaths = [str(x.relative_to(predictions_path / f"render_{step}")) for x in (predictions_path / f"render_{step}").glob("**/*") if x.is_file()]
+        elif split=="test":
+            relpaths = [str(x.relative_to(predictions_path)) for x in (predictions_path).glob("**/val_*.png") if x.is_file()]
+        else:
+            raise ValueError("Wrong split!")
         relpaths.sort()
 
         def read_predictions() -> Iterable[RenderOutput]:
             # Load the prediction
             for relname in relpaths:
-                yield {
-                    "color": read_image(predictions_path / "color" / relname)
-                }
+                if split=="train":
+                    yield {
+                        "color": read_image(predictions_path / f"render_{step}" / relname)
+                    }
+                else:
+                    color = read_image(predictions_path / relname)
+                    h, w, c = color.shape
+                    color = color[:, w//2:, :]
+                    yield {
+                        "color": color
+                    }
 
-        gt_images = [
-            read_image(predictions_path / "gt-color" / name) for name in relpaths
-        ]
+        #gt_images = [
+        #    read_image(predictions_path / "gt-color" / name) for name in relpaths
+        #]
+        
+        if split=="train":
+            gt_images = [
+                read_image(predictions_path / f"data_{step}" / name) for name in relpaths
+            ]
+        else:
+            gt_images = [
+                read_image(predictions_path / name) for name in relpaths
+            ]
+            h, w, c = gt_images[0].shape
+            print(gt_images[0].shape, len(gt_images))
+            gt_images = [img[:, :w//2, :] for img in gt_images]
+        #gt_images = [
+        #    read_image(predictions_path / "gt-color" / name) for name in relpaths
+        #]
+
         with suppress_type_checks():
             from pprint import pprint
             pprint(nb_info)
             dataset = new_dataset(
                 cameras=typing.cast(Cameras, None),
                 image_paths=relpaths,
-                image_paths_root=str(predictions_path / "color"),
+                image_paths_root=str(predictions_path / f"render_{step}") if split=="train" else str(predictions_path),
                 metadata=typing.cast(Dict, nb_info.get("render_dataset_metadata", nb_info.get("dataset_metadata", {}))),
                 images=gt_images)
 
@@ -423,8 +453,8 @@ def evaluate(predictions: str,
                 metrics = evaluation_protocol.accumulate_metrics(collect_metrics_lists())
 
         # If output is specified, write the results to a file
-        if os.path.exists(str(output)):
-            raise FileExistsError(f"{output} already exists")
+        #if os.path.exists(str(output)):
+        #    raise FileExistsError(f"{output} already exists")
 
         out = save_evaluation_results(str(output),
                                       metrics=metrics, 
@@ -442,7 +472,7 @@ class DefaultEvaluationProtocol(EvaluationProtocol):
         pass
 
     def render(self, method: Method, dataset: Dataset) -> RenderOutput:
-        return method.render(dataset["cameras"].item())
+        return method.render(dataset["cameras"].item(), gt_image=dataset["images"][0])
 
     def get_name(self):
         return self._name
@@ -482,6 +512,8 @@ def render_all_images(
     description: str = "rendering all images",
     nb_info: Optional[dict] = None,
     evaluation_protocol: EvaluationProtocol,
+    step = None,
+    split = None,
 ) -> Iterable[RenderOutput]:
     logging.info(f"Rendering images with evaluation protocol {evaluation_protocol.get_name()}")
     background_color =  dataset["metadata"].get("background_color", None)
@@ -509,7 +541,9 @@ def render_all_images(
                                          for i in range(len(dataset["image_paths"]))
                                     ),
                                     dataset=dataset,
-                                    nb_info=nb_info):
+                                    nb_info=nb_info,
+                                    step=step,
+                                    split=split):
             progress.update(1)
             yield val
 
@@ -653,14 +687,15 @@ def save_evaluation_results(file,
                             evaluation_protocol: str, 
                             nb_info: Dict):
     if isinstance(file, str):
-        if os.path.exists(file):
-            raise FileExistsError(f"{file} already exists")
+        #if os.path.exists(file):
+        #    raise FileExistsError(f"{file} already exists")
         with open(file, "w", encoding="utf8") as f:
             return save_evaluation_results(f, metrics, metrics_lists, evaluation_protocol, nb_info)
 
     else:
         out = serialize_evaluation_results(metrics, metrics_lists, evaluation_protocol, nb_info)
-        json.dump(out, file, indent=2)
+        # only need metrics
+        json.dump(out["metrics"], file, indent=2)
         return out
 
 
@@ -673,7 +708,7 @@ def save_cameras_npz(file, cameras):
     np.savez(file, **numpy_arrays)
 
 
-def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: Dataset, *, nb_info=None) -> Iterable[RenderOutput]:
+def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: Dataset, *, nb_info=None, step=None, split=None) -> Iterable[RenderOutput]:
     background_color =  dataset["metadata"].get("background_color", None)
     assert background_color is None or background_color.dtype == np.uint8, "background_color must be None or uint8"
     color_space = dataset["metadata"]["color_space"]
@@ -688,13 +723,35 @@ def save_predictions(output: str, predictions: Iterable[RenderOutput], dataset: 
             relative_name = Path(dataset["image_paths"][i])
             if dataset["image_paths_root"] is not None:
                 relative_name = relative_name.relative_to(Path(dataset["image_paths_root"]))
-            with open_fn(f"gt-color/{relative_name.with_suffix('.png')}") as f:
-                save_image(f, gt_image)
-            with open_fn(f"color/{relative_name.with_suffix('.png')}") as f:
-                save_image(f, pred_image)
 
-            with open_fn(f"cameras/{relative_name.with_suffix('.npz')}") as f:
-                save_cameras_npz(f, dataset["cameras"][i])
+            if split=="train":
+                #with open_fn(f"gt-color/{relative_name.with_suffix('.png')}") as f:
+                with open_fn(f"data_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                    save_image(f, gt_image)
+                #with open_fn(f"color/{relative_name.with_suffix('.png')}") as f:
+                with open_fn(f"render_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                    save_image(f, pred_image)
+                # to h, w, 1
+                if pred["loss_mult"] is not None and split=="train":
+                    mask = np.transpose(pred["loss_mult"], (1, 2, 0))[...,0]
+                    with open_fn(f"mask_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                        save_image(f, mask)
+                if pred["loss_mult"] is not None and split=="train":
+                    mask = np.transpose(pred["loss_mult"], (1, 2, 0))[...,0]
+                    mask_rgb = (np.repeat(mask[..., None], 3, axis=2)*255).astype(np.uint8)  # (H, W, 3)
+                    combine = np.concatenate((gt_image, mask_rgb, pred_image), axis=1)
+                    with open_fn(f"composition_{step}/train_clutter_{relative_name.with_suffix('.png')}") as f:
+                        save_image(f, combine)
+            elif split=="test":
+                combine = np.concatenate((gt_image, pred_image), axis=1)
+                with open_fn(f"val_{i:04}.png") as f:
+                    save_image(f, combine)
+            else:
+                raise ValueError("Wrong Split!")
+
+            #with open_fn(f"cameras/{relative_name.with_suffix('.npz')}") as f:
+            #    save_cameras_npz(f, dataset["cameras"][i])
+            
             # with open_fn(f"gt-color/{relative_name.with_suffix('.npy')}") as f:
             #     np.save(f, dataset["images"][i][:h, :w])
             # with open_fn(f"color/{relative_name.with_suffix('.npy')}") as f:

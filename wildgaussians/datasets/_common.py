@@ -5,6 +5,7 @@ import struct
 import numpy as np
 import PIL.Image
 import PIL.ExifTags
+import cv2
 from tqdm import tqdm
 from typing import Optional, TypeVar, Tuple, Union, List, Sequence, Dict, cast, overload
 from ..types import Dataset, Literal, Cameras, UnloadedDataset
@@ -276,6 +277,17 @@ def dataset_load_features(
                 warnings.warn(f"Resized image with a factor of {resize}")
 
             image = np.array(pil_image, dtype=np.uint8)
+
+            # undistort
+            p_str = str(p)
+            info = dataset["undistort_map"][p_str]
+            map1, map2 = info["map1"], info["map2"]
+            x_min, y_min, x_max, y_max = info["crop"]
+            # Undistort using precomputed maps
+            image = cv2.remap(image, map1, map2, interpolation=cv2.INTER_LINEAR)
+            # Crop to global crop box
+            image = image[y_min:y_max, x_min:x_max]
+
         images.append(image)
         image_sizes.append([image.shape[1], image.shape[0]])
         all_metadata.append(metadata)
@@ -384,7 +396,8 @@ def dataset_index_select(dataset: TDataset, i: Union[slice, int, list, np.ndarra
         "mask_paths_root", 
         "points3D_xyz", 
         "points3D_rgb", 
-        "metadata"}})
+        "metadata",
+        "undistort_map"}})
     return cast(TDataset, _dataset)
 
 
@@ -400,7 +413,8 @@ def new_dataset(*,
                 points3D_xyz: Optional[np.ndarray] = ...,  # [M, 3]
                 points3D_rgb: Optional[np.ndarray] = ...,  # [M, 3]
                 images_points3D_indices: Optional[Sequence[np.ndarray]] = None,  # [N][<M]
-                metadata: Dict) -> Dataset:
+                metadata: Dict,
+                undistort_map=None) -> Dataset:
     ...
 
 
@@ -416,7 +430,8 @@ def new_dataset(*,
                 points3D_xyz: Optional[np.ndarray] = ...,  # [M, 3]
                 points3D_rgb: Optional[np.ndarray] = ...,  # [M, 3]
                 images_points3D_indices: Optional[Sequence[np.ndarray]] = None,  # [N][<M]
-                metadata: Dict) -> UnloadedDataset:
+                metadata: Dict,
+                undistort_map=None) -> UnloadedDataset:
     ...
 
 
@@ -431,7 +446,8 @@ def new_dataset(*,
                 points3D_xyz: Optional[np.ndarray] = None,  # [M, 3]
                 points3D_rgb: Optional[np.ndarray] = None,  # [M, 3]
                 images_points3D_indices: Optional[Sequence[np.ndarray]] = None,  # [N][<M]
-                metadata: Dict) -> Union[UnloadedDataset, Dataset]:
+                metadata: Dict,
+                undistort_map=None) -> Union[UnloadedDataset, Dataset]:
     if image_paths_root is None:
         image_paths_root = os.path.commonpath(image_paths)
     if mask_paths_root is None and mask_paths is not None:
@@ -449,7 +465,8 @@ def new_dataset(*,
         points3D_xyz=points3D_xyz,
         points3D_rgb=points3D_rgb,
         images_points3D_indices=list(images_points3D_indices) if images_points3D_indices is not None else None,
-        metadata=metadata
+        metadata=metadata,
+        undistort_map=undistort_map,
     )
 
 

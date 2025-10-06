@@ -1653,8 +1653,8 @@ class WildGaussians(Method):
                 raise RuntimeError(f"Model directory {checkpoint} does not exist")
             logging.info(f"Loading config file {os.path.join(checkpoint, 'config.yaml')}")
             self.config = cast(Config, OmegaConf.merge(self.config, OmegaConf.load(os.path.join(checkpoint, "config.yaml"))))
-            self._loaded_step = self.step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(str(self.checkpoint)) if x.startswith("chkpnt-"))[-1]
-            state_dict_name = f"chkpnt-{self._loaded_step}.pth"
+            self._loaded_step = self.step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(str(self.checkpoint)) if x.startswith("ckpt_"))[-1]
+            state_dict_name = f"ckpt_{self._loaded_step}.pth"
             load_state_dict = torch.load(os.path.join(checkpoint, state_dict_name))
         else:
             if config_overrides is not None:
@@ -1829,7 +1829,7 @@ class WildGaussians(Method):
         else:
             raise NotImplementedError("Trying to optimize embedding with appearance_enabled=False")
 
-    def render(self, camera: Cameras, options=None, **kwargs) -> RenderOutput:
+    def render(self, camera: Cameras, options=None, gt_image=None, **kwargs) -> RenderOutput:
         del kwargs
         camera = camera.item()
         device = self.model.xyz.device
@@ -1857,9 +1857,18 @@ class WildGaussians(Method):
 
             color = image.detach().permute(1, 2, 0).cpu().numpy()
 
+            # we want to get mask as well
+            if gt_image is not None:
+                gt_image = torch.tensor(convert_image_dtype(gt_image, np.float32), dtype=torch.float32, device=device).permute(2, 0, 1)
+                _, _, loss_mult = self.model.uncertainty_model.get_loss(gt_image, out["render"].detach())
+                loss_mult = (loss_mult > 1).to(dtype=loss_mult.dtype).detach().cpu().numpy()
+            else:
+                loss_mult = None
+
             ret_out: RenderOutput = {
                 "color": color,
                 "accumulation": out["accumulation"].squeeze(-1).detach().cpu().numpy(),
+                "loss_mult": loss_mult
             }
             if out.get("depth") is not None:
                 ret_out["depth"] = out["depth"].detach().cpu().numpy()
@@ -2030,13 +2039,15 @@ class WildGaussians(Method):
         return embed
 
     def save(self, path):
-        self.model.save_ply(os.path.join(path, "point_cloud.ply"))
+        # to save space
+        #self.model.save_ply(os.path.join(path, "point_cloud.ply"))
+        os.makedirs(path, exist_ok=True)
         ckpt = self.model.state_dict()
-        ckpt_path = str(path) + f"/chkpnt-{self.step}.pth"
+        ckpt_path = str(path) + f"/ckpt_{self.step}.pth"
         torch.save(ckpt, ckpt_path)
         OmegaConf.save(self.config, os.path.join(path, "config.yaml"))
 
         # Note, since the torch checkpoint does not have deterministic SHA, we compute the SHA here.
-        sha = get_torch_checkpoint_sha(ckpt)
-        with open(ckpt_path + ".sha256", "w", encoding="utf8") as f:
-            f.write(sha)
+        #sha = get_torch_checkpoint_sha(ckpt)
+        #with open(ckpt_path + ".sha256", "w", encoding="utf8") as f:
+        #    f.write(sha)

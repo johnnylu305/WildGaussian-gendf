@@ -31,9 +31,9 @@ from wildgaussians.utils import (
 from wildgaussians.method import WildGaussians
 
 
-def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, step: int, evaluation_protocol: EvaluationProtocol, split: str, nb_info):
+def eval_all(method: Method, dataset: Dataset, *, output: str, step: int, evaluation_protocol: EvaluationProtocol, split: str, nb_info):
     total_rays = 0
-    metrics: Optional[Dict[str, float]] = {} if logger else None
+    metrics: Optional[Dict[str, float]] = {} #if logger else None
     expected_scene_scale = dataset["metadata"].get("expected_scene_scale")
 
     # Store predictions, compute metrics, etc.
@@ -41,22 +41,27 @@ def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, s
     if prefix is None:
         prefix = Path(os.path.commonpath(dataset["image_paths"]))
 
+    os.makedirs(os.path.join(output, "stats"), exist_ok=True)    
     if split != "test":
-        output_metrics = os.path.join(output, f"results-{step}-{split}.json")
-        output = os.path.join(output, f"predictions-{step}-{split}.tar.gz")
+        output_metrics = os.path.join(output, "stats", f"train_step{step}.json")
+        #output = os.path.join(output, f"predictions-{step}-{split}.tar.gz")
     else:
-        output_metrics = os.path.join(output, f"results-{step}.json")
-        output = os.path.join(output, f"predictions-{step}.tar.gz")
+        output_metrics = os.path.join(output, "stats", f"val_step{step}.json")
+        #output = os.path.join(output, f"predictions-{step}.tar.gz")
 
-    if os.path.exists(output):
-        if os.path.isfile(output):
-            os.unlink(output)
-        else:
-            shutil.rmtree(output)
-        logging.warning(f"removed existing predictions at {output}")
 
-    if os.path.exists(output_metrics):
-        os.unlink(output_metrics, logging.warning(f"removed existing results at {output_metrics}"))
+    output = os.path.join(output, "renders")
+    os.makedirs(output, exist_ok=True)
+
+    #if os.path.exists(output):
+    #    if os.path.isfile(output):
+    #        os.unlink(output)
+    #    else:
+    #        shutil.rmtree(output)
+    #    logging.warning(f"removed existing predictions at {output}")
+
+    #if os.path.exists(output_metrics):
+    #    os.unlink(output_metrics, logging.warning(f"removed existing results at {output_metrics}"))
 
     start = time.perf_counter()
     num_vis_images = 16
@@ -71,9 +76,12 @@ def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, s
             description=f"rendering all images at step={step}",
             nb_info=nb_info,
             evaluation_protocol=evaluation_protocol,
+            step=step,
+            split=split,
         ),
         dataset["cameras"].image_sizes,
     ):
+        # not used
         if len(vis_images) < num_vis_images:
             color = pred["color"]
             background_color = dataset["metadata"].get("background_color", None)
@@ -91,30 +99,32 @@ def eval_all(method: Method, logger: Logger, dataset: Dataset, *, output: str, s
         output, 
         output_metrics, 
         evaluation_protocol=evaluation_protocol,
-        description=f"evaluating all images at step={step}")
+        description=f"evaluating all images at step={step}",
+        step=step,
+        split=split)
     metrics = info["metrics"]
 
-    if logger:
-        assert metrics is not None, "metrics must be computed"
-        logging.debug(f"logging metrics to {logger}")
-        metrics["fps"] = len(dataset["cameras"]) / elapsed
-        metrics["rays-per-second"] = total_rays / elapsed
-        metrics["time"] = elapsed
-        with logger.add_event(step) as event:
-            for k, v in metrics.items():
-                event.add_scalar(f"eval-all-{split}/{k}", v)
+    #if logger:
+    #    assert metrics is not None, "metrics must be computed"
+    #    logging.debug(f"logging metrics to {logger}")
+    #    metrics["fps"] = len(dataset["cameras"]) / elapsed
+    #    metrics["rays-per-second"] = total_rays / elapsed
+    #    metrics["time"] = elapsed
+    #    with logger.add_event(step) as event:
+    #        for k, v in metrics.items():
+    #            event.add_scalar(f"eval-all-{split}/{k}", v)
 
-        num_cols = int(math.sqrt(len(vis_images)))
-        color_vis = make_image_grid(
-            make_image_grid(*[x[0] for x in vis_images], ncol=num_cols),
-            make_image_grid(*[x[1] for x in vis_images], ncol=num_cols),
-        )
+    #    num_cols = int(math.sqrt(len(vis_images)))
+    #    color_vis = make_image_grid(
+    #        make_image_grid(*[x[0] for x in vis_images], ncol=num_cols),
+    #        make_image_grid(*[x[1] for x in vis_images], ncol=num_cols),
+    #    )
 
-        logger.add_image(f"eval-all-{split}/color", 
-                         color_vis, 
-                         display_name="color", 
-                         description="left: gt, right: prediction", 
-                         step=step)
+    #    logger.add_image(f"eval-all-{split}/color", 
+    #                     color_vis, 
+    #                     display_name="color", 
+    #                     description="left: gt, right: prediction", 
+    #                     step=step)
 
 
 def _slice_dataset(dataset: Dataset):
@@ -123,7 +133,7 @@ def _slice_dataset(dataset: Dataset):
 
 
 
-def eval_few_custom(method: WildGaussians, logger: Logger, dataset: Dataset, split: str, step: int, evaluation_protocol: EvaluationProtocol):
+def eval_few_custom(method: WildGaussians, dataset: Dataset, split: str, step: int, evaluation_protocol: EvaluationProtocol):
     disable_tqdm = False
 
     embeddings = None
@@ -168,31 +178,31 @@ def eval_few_custom(method: WildGaussians, logger: Logger, dataset: Dataset, spl
     assert result_optim is not None
     cast(Dict, evaluation_dataset)["renders"] = renders
 
-    with logger.add_event(step) as event:
-        for k, v in metrics.pop().items():
-            event.add_scalar(f"eval-few-{split}/{k}", v)
-        # optimization_dataset.images[i], 
-        # image_to_srgb(optim["render_output"]["color"], dtype=np.uint8),
-        if evaluation_protocol.get_name() == "nerfw":
-            assert result_no_optim is not None
-            event.add_image(f"eval-few-{split}/color", 
-                            make_image_grid(*[x for y in eval_few_rows for x in y], ncol=4),
-                            description="left: gt, middle: nopt, right: opt")
-        else:
-            event.add_image(f"eval-few-{split}/color", 
-                            make_image_grid(*[x for y in eval_few_rows for x in y], ncol=3),
-                            description="left: gt, right: render")
-        
-        # Render optimization graph for PSNR, MSE
-        if optim_metrics is not None:
-            for k in ["psnr", "mse"]:
-                metric = optim_metrics[k]
-                event.add_plot(
-                    f"eval-few-{split}/optimization-{k}",
-                    np.stack((np.arange(len(metric)), metric), -1),
-                    axes_labels=("iteration", k),
-                    title=f"Optimization of {k} over iterations",
-                )
+    #with logger.add_event(step) as event:
+    #    for k, v in metrics.pop().items():
+    #        event.add_scalar(f"eval-few-{split}/{k}", v)
+    #    # optimization_dataset.images[i], 
+    #    # image_to_srgb(optim["render_output"]["color"], dtype=np.uint8),
+    #    if evaluation_protocol.get_name() == "nerfw":
+    #        assert result_no_optim is not None
+    #        event.add_image(f"eval-few-{split}/color", 
+    #                        make_image_grid(*[x for y in eval_few_rows for x in y], ncol=4),
+    #                        description="left: gt, middle: nopt, right: opt")
+    #    else:
+    #        event.add_image(f"eval-few-{split}/color", 
+    #                        make_image_grid(*[x for y in eval_few_rows for x in y], ncol=3),
+    #                        description="left: gt, right: render")
+    #    
+    #    # Render optimization graph for PSNR, MSE
+    #    if optim_metrics is not None:
+    #        for k in ["psnr", "mse"]:
+    #            metric = optim_metrics[k]
+    #            event.add_plot(
+    #                f"eval-few-{split}/optimization-{k}",
+    #                np.stack((np.arange(len(metric)), metric), -1),
+    #                axes_labels=("iteration", k),
+    #                title=f"Optimization of {k} over iterations",
+    #            )
 
 
 _CONFIG_OVERRIDES = {
@@ -212,7 +222,7 @@ _CONFIG_OVERRIDES = {
 @click.option("--verbose", "-v", is_flag=True)
 @click.option("--debug", is_flag=True)
 @click.option("--dataset-type", type=click.Choice(["default", "nerfonthego", "phototourism"]), default="default")
-@click.option("--eval-few-iters", type=IndicesClickType(), default=Indices.every_iters(2_000), help="When to evaluate on few images")
+@click.option("--eval-few-iters", type=IndicesClickType(), default=Indices.every_iters(15_000), help="When to evaluate on few images")
 @click.option("--set", "config_overrides", help="Override a parameter in the method.", type=SetParamOptionType(), multiple=True, default=None)
 def train_command(
     data,
@@ -259,24 +269,26 @@ def train_command(
         load_dataset_fn = partial(
             load_dataset, 
             load_dataset_fn=load_colmap_dataset, 
-            images_path="images",
+            images_path="images_8",
             evaluation_protocol=evaluation_protocol.get_name()
         )
 
     test_dataset = load_dataset_fn(data, "test", features, load_features=False)
     train_dataset = load_dataset_fn(data, "train", features, load_features=False)
     if dataset_type == "nerfonthego":
-        dataset_not_official = "Please use the dataset provided for the WG paper"
-        assert os.path.exists(os.path.join(data, "nb-info.json")), dataset_not_official
-        with open(os.path.join(data, "nb-info.json"), "r") as f:
-            info = json.load(f)
-            assert info.pop("loader", None) == "colmap", dataset_not_official
-            info.pop("loader_kwargs", None)
-            info_name = info.get("id", info.get("name"))
-            assert info_name == "nerfonthego-undistorted", dataset_not_official
-            info["id"] = info_name
-            test_dataset["metadata"].update(info)
-            train_dataset["metadata"].update(info)
+        # we will undistort image in the dataloader
+        #dataset_not_official = "Please use the dataset provided for the WG paper"
+        #assert os.path.exists(os.path.join(data, "nb-info.json")), dataset_not_official
+        #with open(os.path.join(data, "nb-info.json"), "r") as f:
+            #info = json.load(f)
+        info = {'loader': 'colmap', 'name': 'nerfonthego-undistorted', 'scene': 'patio-high', 'downscale_factor': 8}
+        assert info.pop("loader", None) == "colmap", dataset_not_official
+        info.pop("loader_kwargs", None)
+        info_name = info.get("id", info.get("name"))
+        assert info_name == "nerfonthego-undistorted", dataset_not_official
+        info["id"] = info_name
+        test_dataset["metadata"].update(info)
+        train_dataset["metadata"].update(info)
     if debug:
         train_dataset = datasets.dataset_index_select(train_dataset, slice(None, 8))
         test_dataset = datasets.dataset_index_select(test_dataset, slice(None, 8))
@@ -303,10 +315,10 @@ def train_command(
     train_dataset["images"] = train_images
 
     # Init logger
-    logger = TensorboardLogger(output_path / "tensorboard", ["eval-all-test/ssim", "eval-all-test/psnr"])
+    #logger = TensorboardLogger(output_path / "tensorboard", ["eval-all-test/ssim", "eval-all-test/psnr"])
 
     # Log hparams
-    logger.add_hparams(cast(Dict, OmegaConf.to_container(method.config, resolve=True)))
+    #logger.add_hparams(cast(Dict, OmegaConf.to_container(method.config, resolve=True)))
 
     info = method.get_info()
     acc_metrics = MetricsAccumulator()
@@ -321,18 +333,18 @@ def train_command(
         acc_metrics.update(metrics)
 
         # Log metrics
-        if step % 100 == 0:
-            acc_metrics_values = acc_metrics.pop()
-            with logger.add_event(step) as event:
-                for k, val in acc_metrics_values.items():
-                    event.add_scalar(f"train/{k}", val)
-            pbar.set_postfix({ "train/loss": f"{acc_metrics_values['loss']:.4f}", "psnr": f"{acc_metrics_values['psnr']:.4f}" })
+        #if step % 100 == 0:
+        #    acc_metrics_values = acc_metrics.pop()
+        #    with logger.add_event(step) as event:
+        #        for k, val in acc_metrics_values.items():
+        #            event.add_scalar(f"train/{k}", val)
+        #    pbar.set_postfix({ "train/loss": f"{acc_metrics_values['loss']:.4f}", "psnr": f"{acc_metrics_values['psnr']:.4f}" })
 
-        if step % 10_000 == 0:
-            path = output_path / f"checkpoint-{step}"  # pyright: ignore[reportCallIssue]
-            if path.exists():
-                shutil.rmtree(path)
-                logging.warning(f"removed existing checkpoint at {path}")
+        if step % 30_000 == 0:
+            path = output_path / f"ckpts"  # pyright: ignore[reportCallIssue]
+            #if path.exists():
+                #shutil.rmtree(path)
+                #logging.warning(f"removed existing checkpoint at {path}")
             method.save(str(path))
             with open(path / "nb-info.json", "w") as f:
                 json.dump({ "method": "wild-gaussians" }, f)
@@ -340,36 +352,36 @@ def train_command(
 
         if step in eval_few_iters:
             logging.info(f"evaluating on few images at step {step}")
-            eval_few_custom(method, logger, train_dataset_eval_few, split="train", step=step, evaluation_protocol=evaluation_protocol)
-            eval_few_custom(method, logger, test_dataset_eval_few, split="test", step=step, evaluation_protocol=evaluation_protocol)
+            eval_few_custom(method, train_dataset_eval_few, split="train", step=step, evaluation_protocol=evaluation_protocol)
+            eval_few_custom(method, test_dataset_eval_few, split="test", step=step, evaluation_protocol=evaluation_protocol)
 
-        if step % 10_000 == 0:
-            # Display embeddings
-            logging.info(f"logging embeddings at step {step}")
-            labels = [{
-                "name": os.path.relpath(x, train_dataset["image_paths_root"]),
-                "id": i,
-            } for i, x in enumerate(train_dataset["image_paths"])]
-            if method.model.appearance_embeddings is not None:
-                logger.add_embedding("train/appearance-embeddings", 
-                                     method.model.appearance_embeddings.detach().cpu().numpy(), 
-                                     images=train_images_thumbnails, 
-                                     labels=labels,
-                                     step=step)
+        #if step % 15_000 == 0:
+        #    # Display embeddings
+        #    logging.info(f"logging embeddings at step {step}")
+        #    labels = [{
+        #        "name": os.path.relpath(x, train_dataset["image_paths_root"]),
+        #        "id": i,
+        #    } for i, x in enumerate(train_dataset["image_paths"])]
+            #if method.model.appearance_embeddings is not None:
+            #    logger.add_embedding("train/appearance-embeddings", 
+            #                         method.model.appearance_embeddings.detach().cpu().numpy(), 
+            #                         images=train_images_thumbnails, 
+            #                         labels=labels,
+            #                         step=step)
 
     logging.info(f"evaluating on all images as step {step}")
-    eval_all(method, logger, test_dataset, split="test", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
+    eval_all(method, test_dataset, split="test", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
     if evaluation_protocol.get_name() == "nerfw":
-        eval_all(method, logger, train_dataset_eval_few, split="trainsubset", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
+        eval_all(method, train_dataset_eval_few, split="trainsubset", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
     else:
-        eval_all(method, logger, train_dataset, split="train", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
+        eval_all(method, train_dataset, split="train", step=step, output=str(output_path), evaluation_protocol=evaluation_protocol, nb_info={})
 
     # Save final checkpoint
-    if step % 10_000 != 0:
-        path = output_path / f"checkpoint-{step}"  # pyright: ignore[reportCallIssue]
-        if path.exists():
-            path.unlink()
-            logging.warning(f"removed existing checkpoint at {path}")
+    if step % 30_000 != 0:
+        path = output_path / f"ckpts"  # pyright: ignore[reportCallIssue]
+        #if path.exists():
+        #    path.unlink()
+        #    logging.warning(f"removed existing checkpoint at {path}")
         method.save(str(path))
         with open(path / "nb-info.json", "w") as f:
             json.dump({ "method": "wild-gaussians" }, f)
