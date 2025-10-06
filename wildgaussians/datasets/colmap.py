@@ -374,7 +374,7 @@ def load_colmap_dataset(path: Union[Path, str],
         cy = new_K_adj[1, 2]
         intrinsic_vec = np.array([fx, fy, cx, cy], dtype=np.float32)
         camera_intrinsics.append(intrinsic_vec)
-        camera_models.append(1) # PINHOLE
+        camera_models.append(0) # PINHOLE
         camera_distortion_params.append(np.zeros(0, dtype=np.float32))
         camera_sizes.append(np.array((crop_w, crop_h), dtype=np.int32))  # from (w, h) → (crop_w, crop_h)
         image_names.append(image.name)
