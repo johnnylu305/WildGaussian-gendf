@@ -278,8 +278,8 @@ def load_colmap_dataset(path: Union[Path, str],
     camera_sizes = []
 
     # sorted
-    images = dict(sorted(images.items(), key=lambda kv: kv[1].name))
-
+    #images = dict(sorted(images.items(), key=lambda kv: kv[1].name))
+    images = sorted(images.values(), key=lambda img: img.name)
 
     image: Image
 
@@ -298,14 +298,42 @@ def load_colmap_dataset(path: Union[Path, str],
     s_height = actual_height / colmap_height
 
 
+    for cam_id, cam in list(colmap_cameras.items()):
+        assert cam.model == "OPENCV"
+        fx, fy, cx, cy, k1, k2, p1, p2 = cam.params.astype(np.float32)
+
+        # scale intrinsics
+        fx *= s_width
+        fy *= s_height
+        cx *= s_width
+        cy *= s_height
+
+        # scale image size
+        width_s  = actual_width
+        height_s = actual_height
+
+        # write back an updated Camera (same model, same distortion)
+        colmap_cameras[cam_id] = Camera(
+            id=cam.id,
+            model=cam.model,
+            width=width_s,
+            height=height_s,
+            params=np.array([fx, fy, cx, cy, k1, k2, p1, p2], dtype=np.float32),
+        )
+
+
     # --- Step 1: Pre-loop to collect ROI + new_K info ---
     all_rois = []
     all_newKs = []
     all_maps = []
     image_sizes = []
-    for image in images.values():
+    for image in images: #.values():
         camera: Camera = colmap_cameras[image.camera_id]
+        assert camera.model=="OPENCV"
         intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
+        assert w==actual_width
+        assert h==actual_height
+
 
         # intrinsics is 1-D; scale elements directly  
         intrinsics = np.asarray(intrinsics, dtype=np.float32)
@@ -314,15 +342,13 @@ def load_colmap_dataset(path: Union[Path, str],
         else:
             raise ValueError(f"Unsupported intrinsics length: {intrinsics.size}")
 
-        fx *= s_width                     
-        fy *= s_height                    
-        cx *= s_width                     
-        cy *= s_height                    
-
-        w = int(round(w * s_width))       
-        h = int(round(h * s_height))      
-        assert w == actual_width
-        assert h == actual_height         
+        # we have scaled
+        #fx *= s_width                     
+        #fy *= s_height                    
+        #cx *= s_width                     
+        #cy *= s_height                    
+        #w = int(round(w * s_width))       
+        #h = int(round(h * s_height))               
 
         # Build 3x3 K for OpenCV from the scaled 1-D intrinsics
         K = np.array([[fx, 0.0, cx],
@@ -359,7 +385,7 @@ def load_colmap_dataset(path: Union[Path, str],
     
     undistort_map_dict = {} 
 
-    for image, new_K, (map1, map2) in zip(images.values(), all_newKs, all_maps):
+    for image, new_K, (map1, map2) in zip(images, all_newKs, all_maps):
         camera: Camera = colmap_cameras[image.camera_id]
         intrinsics, camera_model, distortion_params, (w, h) = _parse_colmap_camera_params(camera)
 
@@ -467,8 +493,8 @@ def load_colmap_dataset(path: Union[Path, str],
             
             # split training and testing
             image_names_np = np.array([p.split("/")[-1] for p in image_paths])
-            train_mask = np.array(["clutter_" in name for name in image_names_np], dtype=bool)
-            test_mask = np.array(["extra_" in name for name in image_names_np], dtype=bool)
+            train_mask = np.array(["clutter" in name for name in image_names_np], dtype=bool)
+            test_mask = np.array(["extra" in name for name in image_names_np], dtype=bool)
             if split == "train":
                 indices = train_mask
             elif split == "test":
